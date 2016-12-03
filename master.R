@@ -1,6 +1,7 @@
 #install.packages("evd")
 rm(list = ls())
 require(evd)
+require(dplyr)
 set.seed(1234)
 
 source(file = "flow_payoff.R")
@@ -24,7 +25,6 @@ Omega <- cbind(rep(P, times = c(n/2, n/2)), rep(rep(C, times = c(n/4,n/4)), time
 
 nsim <- 21
 
-epsilon <- matrix(data = rgumbel(nsim), nrow = length(X), ncol = nsim)
 
 
 PiP <- matrix(c(0.75, 0.95, 0.25, 0.05), nrow = 2, ncol = 2)
@@ -43,3 +43,28 @@ PiOmega <- rbind(kronecker(PiP, kronecker(PiC, PiIcondCX0)), kronecker(PiP, kron
 Iter <- 0
 V0 <- matrix(data = 0, nrow = dim(Omega)[1], ncol = 1)
 V <- val_func_noeps(Omega, PiOmega, V0 = V0)
+plot(V)
+
+tsim <- 10000
+
+i1 <- 2
+c1 <- rbinom(1, size = 1, prob = 0.5)*0.25
+p1 <- 2
+
+sxt <- matrix(0, nrow = tsim, ncol = 4)
+sxt[1,] <- c(p1, c1, i1, 0)
+
+for (t in 1:(tsim-1)){
+  sxt[t + 1,4] <- choice_var(sxt[t,1], sxt[t,2], sxt[t,3], Omega, PiOmega, V)
+  sxt[t + 1,1:3] <- state_var_next(sxt[t,4], sxt[t,1], sxt[t,2], sxt[t,3], Omega, PiOmega)
+}
+
+
+sxt <- as.data.frame(sxt)
+names(sxt) <- c("P", "C", "I", "X")
+
+summarize(sxt, freq_pos_purchase = mean(X)) #18 %
+sxt %>% filter(P == 0.5) %>% summarize(purchase_on_sale = mean(X)) #14%
+sxt %>% mutate(t = seq(1:tsim)) %>% filter(P == 0.5) %>% select(t) %>% transmute(t_diff = c(diff(t),0)) %>% filter(t_diff != 0) %>% summarize(avg_t_diff_between_sales = mean(t_diff))
+sxt %>% mutate(t = seq(1:tsim)) %>% filter(X == 1) %>% select(t) %>% transmute(t_diff = c(diff(t),0)) %>% filter(t_diff != 0) %>% summarize(avg_t_diff_between_purchases = mean(t_diff))
+
