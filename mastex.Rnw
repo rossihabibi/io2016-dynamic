@@ -1,0 +1,254 @@
+\documentclass{article}
+
+\usepackage{booktabs}
+\usepackage{fullpage}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+
+\title{Inventories : Dynamic discrete choice model}
+\author{Rossi ABI-RAFEH}
+
+\begin{document}
+\maketitle
+
+
+%
+<< global_init, eval=TRUE,echo=FALSE,warning=FALSE,error=FALSE,message=FALSE,results='hide',cache = FALSE>>=
+rm(list = ls())
+require(evd)
+require(dplyr)
+require(ggplot2)
+set.seed(1234)
+options(digits = 2)
+
+
+source(file = "flow_payoff.R")
+source(file = "future_payoff.R")
+source(file = "val_func_iter.R")
+source(file = "val_func.R")
+source(file = "choice_var.R")
+source(file = "state_var_next.R")
+@
+%
+
+
+%
+<<trans_prob, eval=TRUE,echo=FALSE,warning=FALSE,error=FALSE,message=FALSE,results='hide',cache = FALSE>>=
+
+euler <- -digamma(1)
+beta <- 0.99
+
+ibar <- 4
+X <- c(0, 1)
+C <- c(0, 1/4)
+P <- c(2, 1/2)
+I <- seq(0, ibar, 1/4)
+
+n <- length(P)*length(C)*length(I)
+Omega <- cbind(rep(P, times = c(n/2, n/2)), rep(rep(C, times = c(n/4,n/4)), times = 2), rep(I, length.out = n))
+
+PiP <- matrix(c(0.75, 0.95, 0.25, 0.05), nrow = 2, ncol = 2)
+PiC <- matrix(c(1/2, 1/2), nrow = 1, ncol = 2)
+PiIcondCX0 <- rbind(diag(nrow = length(I), ncol = length(I)), diag(nrow = length(I) + 1 , ncol = length(I) + 1)[-18,-1])
+PiIcondCX0[18,1] <- 1 #if x = 0, c = 1 (row 19), then if i = 0, i' = 0 instead of i' = i - 1/4
+
+PiIcondCX1 <- rbind(diag(nrow = length(I) + 4, ncol = length(I) + 4)[5:21,1:17], diag(nrow = length(I) + 3, ncol = length(I) + 3)[4:20,1:17])
+PiIcondCX1[14:17,17] <- 1 #if x = 1, c = 0 then if i > 3  (rows 15 to 18), then i' = 4 instead of i' = i + 1 > ibar
+PiIcondCX1[32:34,17] <- 1 #if x = 1, c = -1/4 then if i > 3.25  (rows 34 to 36), then i' = 4 instead of i' = i + .75 > ibar
+
+PiOmega <- rbind(kronecker(PiP, kronecker(PiC, PiIcondCX0)), kronecker(PiP, kronecker(PiC, PiIcondCX1)))
+#rowSums(PiOmega) # transition proba matrix OK : rows 1 to n = 72 -> conditional on X = 0, rows n + 1 = 73 to 2*n = 144
+#which(rowSums(PiIcondCX1) == 0)
+
+@
+%
+
+\section{Transition probabilities}
+
+The discrete state vector is $s=(i,c,p)$, and the transition probability matrix is the discrete distribution of the next period state $s'$ conditional on this period's state $s$.
+In it, $c'$ is independent from the past, and from $(i', p')$. $p'$ follows a Markov process, and thus depends only on $p$, not on $(i, c)$. Conditional on purchase $x$ and consumption $c$, next period's inventory level $i'$ is deterministic and is equal to $i + x - c$. This is summarized in Equation \ref{eq:probas}
+
+\begin{equation}
+\label{eq:probas}
+	F(s'|s, x ) = F(i',c',p'|i,c,p; x) = \mathbf{1}_{\{i'=i + x -c\}}   \mathbf{P}(c)  \mathbf{P}(p'|p)
+\end{equation}
+
+I then have these two transition probability matrices (each given a value for the purchase decision $x \in \{0,1\}$) :
+
+\begin{table}[h]
+	\centering
+	\caption{State transition probability matrix; given $x=0$}
+		\resizebox{\linewidth}{!}{
+	\begin{tabular}{lllllll}
+	\toprule
+		&& & $p'=p_s$ & $ p'=p_s $ & $p' = p_r$ & $p' = p_r$ \\
+		&&			& $c'=0$ & $c'=1/4$ & $c' = 0$ & $c'=1/4$ \\
+		&&						& $i'$ & $i'$  & $i'$ & $i'$ \\
+
+	\midrule
+	$p=p_s$ & $c = 0$ & $i$ & $1_{\{i'=i + 1 \}} \gamma \Pi (p_s)$ & $1_{\{i'=i + 1 \}} (1-\gamma) \Pi (p_s)$ & $1_{\{i'=i + 1 \}} \gamma (1-\Pi (p_r))$ & $1_{\{i'=i + 1 \}} (1-\gamma) (1-\Pi (p_r))$ \\
+	
+	$p=p_s$ & $c = 1/4$ & $i$ 	& $1_{\{i'=i + 3/4\}} \gamma \Pi (p_s)$ & $1_{\{i'=i + 3/4\}} (1-\gamma) \Pi (p_s)$ & $1_{\{i'=i + 3/4\}} \gamma (1-\Pi (p_r))$ & $1_{\{i'=i + 3/4\}} (1-\gamma) (1-\Pi (p_r))$ \\
+	
+	$p=p_r$ & $c = 0$ & $i$  & $1_{\{i'=i + 1 \}} \gamma (1-\Pi(p_s))$ & $1_{\{i'=i + 1 \}} (1-\gamma) (1-\Pi(p_s))$ & $1_{\{i'=i + 1 \}} \gamma \Pi(p_r)$ & $1_{\{i'=i + 1 \}} (1-\gamma) \Pi(p_r)$ \\
+	
+  $p=p_s$ & $c = 1/4$ & $i$ 	& $1_{\{i'=i + 3/4\}} \gamma (1-\Pi(p_s))$ & $1_{\{i'=i + 3/4\}} (1-\gamma) (1-\Pi(p_s))$ & $1_{\{i'=i + 3/4\}} \gamma \Pi(p_r)$ & $1_{\{i'=i + 3/4\}} (1-\gamma) \Pi(p_r)$  \\
+\bottomrule
+	\end{tabular}}
+\end{table}
+
+\begin{table}[h]
+	\centering
+	\caption{State transition probability matrix; given $x=1$}
+		\resizebox{\linewidth}{!}{
+	\begin{tabular}{lllllll}
+	\toprule
+		&& & $p'=p_s$ & $ p'=p_s $ & $p' = p_r$ & $p' = p_r$ \\
+		&&			& $c'=0$ & $c'=1/4$ & $c' = 0$ & $c'=1/4$ \\
+		&&						& $i'$ & $i'$  & $i'$ & $i'$ \\
+
+	\midrule
+	$p=p_s$ & $c = 0$ & $i$ & $1_{\{i'=i\}} \gamma \Pi (p_s)$ & $1_{\{i'=i\}} (1-\gamma) \Pi (p_s)$ & $1_{\{i'=i\}} \gamma (1-\Pi (p_r))$ & $1_{\{i'=i\}} (1-\gamma) (1-\Pi (p_r))$ \\
+	
+	$p=p_s$ & $c = 1/4$ & $i$ 	& $1_{\{i'=i-1/4\}} \gamma \Pi (p_s)$ & $1_{\{i'=i-1/4\}} (1-\gamma) \Pi (p_s)$ & $1_{\{i'=i-1/4\}} \gamma (1-\Pi (p_r))$ & $1_{\{i'=i-1/4\}} (1-\gamma) (1-\Pi (p_r))$ \\
+	
+	$p=p_r$ & $c = 0$ & $i$  & $1_{\{i'=i\}} \gamma (1-\Pi(p_s))$ & $1_{\{i'=i\}} (1-\gamma) (1-\Pi(p_s))$ & $1_{\{i'=i\}} \gamma \Pi(p_r)$ & $1_{\{i'=i\}} (1-\gamma) \Pi(p_r)$ \\
+	
+  $p=p_s$ & $c = 1/4$ & $i$ 	& $1_{\{i'=i-1/4\}} \gamma (1-\Pi(p_s))$ & $1_{\{i'=i-1/4\}} (1-\gamma) (1-\Pi(p_s))$ & $1_{\{i'=i-1/4\}} \gamma \Pi(p_r)$ & $1_{\{i'=i-1/4\}} (1-\gamma) \Pi(p_r)$  \\
+\bottomrule
+	\end{tabular}}
+\end{table}
+
+
+\section{Computing the value function through a contraction mapping}
+The level of inventory is supposed to follow the dynamic choice model 
+\begin{equation}
+V(i,c,p,\epsilon_t) = \max_{x \in \{0,1\}} \alpha c - \lambda \mathbf{1}(c>0) \mathbf{1}(i=1) - xp + \epsilon(x) + \beta  E_{\epsilon'} [V(i',c',p',\epsilon')]Pr(c',p'|c,p,x)
+\end{equation}
+where $V$ is the value function of the agent, $x$ the purchase decision, $p$ the price and $c$ the consumption state variable. The model here is stationary in the sense that it can be re-written (in infinite horizon) as the dependence of a period on its previous period state and choice variables.
+
+The shock variable $\epsilon$ is observed to the agent (and depends on the choice variable) but includes all the variables that are unobserved to the econometrician. To be able to integrate out the unobserved, I assume : 
+\begin{itemize}
+	\item \textbf{Additive separability of observed and unobserved state variables} the flow payoff of the current period is $u(s,x) + \epsilon(x)$;
+	\item \textbf{Conditional independence} given $s$ and $x$, $\mathbb{P}(s'  | s, \epsilon, x) =\mathbb{P}(s'  | s, x)$;
+	\item \textbf{Distributional assumption}  $\epsilon$ are iid across periods, and follow an Extreme Value Type 1 distribution.	
+\end{itemize}
+
+I can rewrite the Bellman equation using the state vector $s=(i,c,p)$ and taking $u(s,x)$ to be the flow payoff of the current period (from choice $x$) : 
+\begin{align}
+\label{eq:bell}
+V(s,\epsilon) &= \max_{x \in \{0,1\}} \Big\{ u(s,x) + \epsilon(x) + \beta \int E_{\epsilon'}[V(s',\epsilon')]f(s'|s,x) ds' \Big\} \\
+&= \max_{x \in \{0,1\}} \Big\{u(s,x) + \epsilon(x) + \beta \int V(s', \epsilon') f(s'|s,x)g(\epsilon)ds'd\epsilon' \Big\}
+\end{align}
+
+The expected value function is the expected maximum value that the agent expects to receive before the unobserved states $\epsilon$ are realized : 
+\begin{equation}
+v(s) = E_{\epsilon}[V(s,\epsilon)] = \int V(s,\epsilon)g(\epsilon)d\epsilon
+\end{equation}
+
+Re-write the bellman equation \ref{eq:bell} using the expected value function  $v(s)$  and Fubini's theorem:
+\begin{equation}
+\label{eq:bellvalue}
+V(s,\epsilon) = \max_{x \in \{0,1\}} \Big\{ u(s,x) + \epsilon(x) + \beta \int v(s') f(s'|s,x)ds' \Big\}
+\end{equation}
+
+Take expectation on both sides of Equation \ref{eq:bellvalue} with respect to $\epsilon$ :
+\begin{equation}
+\label{eq:intBell}
+v(s) = \int \max_{x \in \{0,1\}} \Big\{ u(s,x) + \epsilon(x) + \beta \int v(s') f(s'|s,x)ds' \Big\}g(\epsilon)d\epsilon
+\end{equation}
+
+The right-hand side of Equation \ref{eq:intBell} defines the contraction mapping for the expected value function $v$. The algorithm is the following at iteration $k$, with  $\mathbf{P}(s'|s,x)$ the  state transition conditional probabilities matrix computed in question 1:
+\begin{equation}
+\label{eq:contracmap}
+v^k(s) = \int \max_{x \in \{0,1\}} \Big\{ u(s,x) + \epsilon(x) + \beta \sum_{s'} v^{k-1}(s') \mathbf{P}(s'|s,x) \Big\} g(\epsilon)d\epsilon
+\end{equation}
+Rust (1986) proves this contraction mapping has one unique solution thus the algorithm is guaranteed to converge to the expected value function. However, if one is to numerically implement the algorithm, one needs to draw a given number of independent draws of $\epsilon$ for each value of $x$, and for each draw of $\epsilon$ for a given $x$, one needs to compare the flow and future payoffs to those under \emph{all} the draws of $\epsilon$ for the alternative value of $x$ in order to choose the maximum, and then proceed to numerically compute the double integral (over $\epsilon$ and $s'$) through a double summation. This is the approach of Rust (1987). Hotz-Miller (1993) integrate out the unobservables analytically using the Gumbel distribution assumption. 
+
+When $\epsilon$ are iid Type I Extreme Value  distributed, then $E(\epsilon) =\gamma$ where $\gamma \approx 0.57722$ is Euler's constant. The expected value function algorithm is then : 
+\begin{equation}
+v^k(s) = \gamma + log \Big(\sum_{x=0,1}^{} exp \Big(u(s,x) + \beta \sum_{s'} v^{k-1}(s') \mathbf{P}(s'|s,x) \Big)\Big)
+\end{equation}
+
+The results from the value function iteration are shown in Figure \ref{fig:val_func}. The value function shows decreasing marginal returns from stockpiling : for a given value of $p,c$, increasing the stock increases the expected value function, but the increase are lower the closer we are to the penalty threshold. This is normal given the flow payoff functional form. The second intuitive feature to note is that sales prices lead to higher value for the agent, for given inventory and consumption levels. The expected value function I get is robust to different starting values for the algorithm.
+
+<<contraction_mapping, eval=TRUE,echo=FALSE,warning=FALSE,error=FALSE,message=FALSE,results='hide',cache = FALSE>>=
+
+Iter <- 0
+V0 <- matrix(data = 0, nrow = dim(Omega)[1], ncol = 1)
+V <- val_func_noeps(Omega, PiOmega, V0 = V0)
+
+Vdf <- as.data.frame(cbind(Omega, V))
+names(Vdf) <- c("P","C", "I", "V")
+@
+%
+
+<<value_func_plot, eval=TRUE, echo = FALSE, dev='png', fig.lp="fig:val_func", fig.cap = 'Value function, for given state var values, using V0 constant and equal to 0'>>=
+m <- ggplot(Vdf, aes(I, V)) + geom_point(aes(colour = factor(P))) + facet_grid(. ~ C)
+m
+@
+
+
+\section{Simulation}
+
+<<simulation, eval=TRUE,echo=FALSE,warning=FALSE,error=FALSE,message=FALSE,results='hide',cache = FALSE>>=
+tsim <- 10000
+
+i1 <- 0
+c1 <- rbinom(1, size = 1, prob = 0.5)*0.25
+p1 <- 2
+
+sxt <- matrix(0, nrow = tsim, ncol = 4)
+sxt[1,] <- c(p1, c1, i1, 0)
+
+for (t in 1:(tsim-1)){
+  sxt[t + 1,4] <- choice_var(sxt[t,1], sxt[t,2], sxt[t,3], Omega, PiOmega, V)
+  sxt[t + 1,1:3] <- state_var_next(sxt[t,4], sxt[t,1], sxt[t,2], sxt[t,3], Omega, PiOmega)
+}
+
+
+sxt <- as.data.frame(sxt)
+names(sxt) <- c("P", "C", "I", "X")
+
+ss1 <- summarize(sxt, freq_pos_purchase = mean(X)) #18 %
+ss2 <- sxt %>% filter(P == 0.5) %>% summarize(purchase_on_sale = mean(X)) #14%
+
+
+
+ss3 <- sxt %>% mutate(t = seq(1:tsim)) %>% filter(P == 0.5) %>% select(t) %>% transmute(t_diff = c(diff(t),0)) %>% filter(t_diff != 0) %>% summarize(avg_t_diff_between_sales = mean(t_diff))
+ss4 <- sxt %>% mutate(t = seq(1:tsim)) %>% filter(X == 1) %>% select(t) %>% transmute(t_diff = c(diff(t),0)) %>% filter(t_diff != 0) %>% summarize(avg_t_diff_between_purchases = mean(t_diff))
+
+ss5 <- sxt %>% filter(I == 4) %>% summarize(freq_purchase_when_full_stock = mean(X))
+@
+%
+
+I simulate a sequence of $T=\Sexpr{tsim}$ periods from the model using the expected value function I obtain with the contraction mapping in section 2. The summary statistics are reported in Table 3. The striking result is that the empirical probability (using LLN) of purchases under sales is \emph{lower} than the probability of purchase under regular price. This result goes against the intuition one expects, and even the previous result about the expected value function being higher under sales prices. It is likely this result is due to an error although I am unable to find where exactly it originates. The distribution of prices seems to be accurate in the simulation.
+\\ I also note that the average duration between purchases is actually higher than the average duration between sales. This is probably due to the penalty on overstocking, which leads the agent to avoid buying under sales when they are close to paying the penalty. The agent trades off the increased benefit of buying on sales price, and the penalty of overstocking, and prefer to "pass" their turn on some sales periods without making any purchase.
+
+\begin{table}[h]
+	\centering
+	\caption{Summary Statistics}
+	\begin{tabular}{llll}
+\toprule
+		Frequency of  & Probability of  & Average duration  & Average duration  \\
+		positive purchases & purchasing on sale & between sales & between purchases\\
+				$\mathbf{P}(x = 1)$ & $\mathbf{P}(x = 1 | p = p_s)$ &  & \\
+
+\midrule
+\Sexpr{ss1*100} \% & \Sexpr{ss2*100} \% & \Sexpr{ss3} & \Sexpr{ss4}\\
+\bottomrule
+	\end{tabular}
+\end{table}
+
+
+<<price_simul, eval=TRUE, echo = FALSE, dev='png', fig.lp="fig:val_func", fig.cap = 'Simulated price distribution'>>=
+hist(sxt$P)
+@
+%hist(sxt$I)
+
+%hist((filter(sxt, P == 0.5) %>% select(X))$X)
+
+
+\end{document}
